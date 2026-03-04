@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Azure AppGW – ICM CRI Analysis Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.8.0/Recharts.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f172a; font-family: 'Segoe UI', system-ui, sans-serif; color: #e2e8f0; }
+    ::-webkit-scrollbar { width: 6px; } 
+    ::-webkit-scrollbar-track { background: #1e293b; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState } = React;
+    const {
+      BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+      ResponsiveContainer, PieChart, Pie, Cell
+    } = Recharts;
+
+    const ICM_DATA = [
+      {
+        id: "691599823", sev: 2,
+        title: "Application Gateway: DDoS Attack \u2013 No Rate Limiting / WAF",
+        category: "Security / DDoS",
+        causeCategory: "Customer Misconfiguration",
+        detailedCause: "Customer's front door had no WAF or rate limiting enabled, fully exposing the AppGW to DDoS traffic. All gateway instances failed under attack load. The fix required adding Azure Front Door \u2192 AppGW with WAF and rate limiting rules enforced upstream.",
+        resolution: "Deploy AFD \u2192 AppGW with WAF + Rate Limiting enabled",
+        uatOwner: "anpatodi",
+        tags: ["DDoS", "WAF", "Rate Limiting", "Security"],
+        deflectable: false,
+      },
+      {
+        id: "658172993", sev: 3,
+        title: "AppGW Performance: HTTP/2 Limit Exceeded \u2013 Payment Processing Failures",
+        category: "HTTP/2 Limits",
+        causeCategory: "Default Limits Too Low",
+        detailedCause: "Clients experienced throttling and connection resets because the AppGW default HTTP/2 stream and request limits (1000 req/conn) were too restrictive for this payment workload. Quota enforcement triggered, resulting in payment failures.",
+        resolution: "Increase HTTP/2 stream and request limits per gateway instance",
+        uatOwner: "bigat",
+        tags: ["HTTP/2", "Throttling", "Limits", "Payment"],
+        deflectable: false,
+      },
+      {
+        id: "634084107", sev: 3,
+        title: "AppGW: Intermittent HTTP 502 Errors \u2013 Backend AKS Returning 408 Timeouts",
+        category: "Backend Connectivity",
+        causeCategory: "Customer Misconfiguration",
+        detailedCause: "Intermittent 502 errors traced to the backend AKS cluster returning HTTP 408 request timeout responses. AppGW was forwarding correctly but AKS was timing out. Pcap analysis was blocked by customer restrictions. Root cause: AKS pod timeout misconfiguration.",
+        resolution: "Fix AKS backend request timeout configuration; validate with network captures",
+        uatOwner: "abmittal",
+        tags: ["502", "Backend", "AKS", "Timeout"],
+        deflectable: false,
+      },
+      {
+        id: "618353390", sev: 3,
+        title: "AppGW Deployments Failing in Stage Regions",
+        category: "Deployment / Region",
+        causeCategory: "Platform / Engineering Bug",
+        detailedCause: "AppGW deployment operations failed in US South Central because the stage region was never properly onboarded for the service. The gateway management endpoint could not be resolved, and validation logic incorrectly allowed deployment attempts to an unsupported region.",
+        resolution: "Complete US South Central regional onboarding; add validation to block unsupported region deployments",
+        uatOwner: "yuemingzhang",
+        tags: ["Deployment", "Region", "Onboarding", "Stage"],
+        deflectable: false,
+      },
+      {
+        id: "632918122", sev: 3,
+        title: "Mutual TLS Authentication Not Supported on Health Probe Route",
+        category: "Feature Gap / mTLS",
+        causeCategory: "Feature Gap / Design Limitation",
+        detailedCause: "Customer required mTLS on the health probe route, which is not supported by AppGW design. The health probe listener cannot be configured with client certificate authentication. Workaround: use separate listeners \u2014 port 80 without cert for probes, another port with cert for traffic \u2014 or configure multisite listeners.",
+        resolution: "Use separate listeners for probe vs. traffic, or multisite listener config. Log feature request for probe mTLS support.",
+        uatOwner: "parimalme",
+        tags: ["mTLS", "Health Probe", "Feature Gap", "Listener"],
+        deflectable: true,
+      },
+      {
+        id: "690128392", sev: 3,
+        title: "AppGW CRUD: V1 to V2 Migration Blocked by Reserved 'GatewaySubnet' Name",
+        category: "Migration",
+        causeCategory: "Feature Gap / Design Limitation",
+        detailedCause: "Migration from Classic Cloud Service (CS) to CSES was impossible because the customer's V1 gateway used a subnet named 'GatewaySubnet' \u2014 a reserved name that blocks migration by design. Customer was contacted multiple times to rename the subnet but took no action. Microsoft was forced to delete the internal resource group to comply with platform retirement requirements.",
+        resolution: "Customer must rename subnet and migrate to V2. Forced resource group deletion performed as last resort.",
+        uatOwner: "pratjadhav",
+        tags: ["Migration", "V1 to V2", "GatewaySubnet", "Design Limitation"],
+        deflectable: false,
+      },
+      {
+        id: "627799465", sev: 3,
+        title: "AppGW PUT Operation Took 50+ Minutes",
+        category: "Performance / CRUD",
+        causeCategory: "Platform / Engineering Bug",
+        detailedCause: "A single PUT operation on an AppGW resource took over 50 minutes with no customer-facing error or progress indicator. No definitive root cause was identified during investigation \u2014 likely an internal ARM orchestration or NRP processing bottleneck. Requires granular PUT operation telemetry to diagnose.",
+        resolution: "Add granular PUT operation tracing with per-stage timestamps. Set SLO alert for PUT ops exceeding 5 minutes.",
+        uatOwner: "anpatodi",
+        tags: ["PUT", "Latency", "CRUD", "ARM"],
+        deflectable: false,
+      },
+      {
+        id: "638738472", sev: 3,
+        title: "AppGW: 502 Errors During Auto-Scaling Events (Two Gateways Affected)",
+        category: "Scaling / Connectivity",
+        causeCategory: "Platform / Engineering Bug",
+        detailedCause: "During auto-scaling events, a single AppGW instance failed to handle incoming requests causing 502 errors despite backends being healthy. The same pattern was observed independently across two different AppGW instances, indicating a systemic race condition between scale-out completion and traffic routing. Nginx service restart during scaling was the proximate cause.",
+        resolution: "Implement pre-warm health check before directing traffic to new scale instances; investigate nginx restart race condition",
+        uatOwner: "vinatara",
+        tags: ["502", "Auto-scaling", "Connection Draining", "nginx"],
+        deflectable: false,
+      },
+      {
+        id: "669529794", sev: 3,
+        title: "AppGW Provisioning Failure: Cannot Reach KeyVault for SSL Certificates",
+        category: "KeyVault / Connectivity",
+        causeCategory: "Customer Misconfiguration",
+        detailedCause: "AppGW provisioning failed because it could not download SSL certs from the customer's Key Vault. The gateway was network-isolated (no public load balancer after public IP rules were removed), but no private endpoint or service endpoint was configured to allow the gateway subnet to reach Key Vault. The KV firewall only permitted public IP traffic, creating a deadlock.",
+        resolution: "Configure a private endpoint or service endpoint for Key Vault access from the AppGW subnet",
+        uatOwner: "singhsukhdev",
+        tags: ["KeyVault", "SSL", "Network Isolation", "Provisioning", "Private Endpoint"],
+        deflectable: true,
+      },
+      {
+        id: "653075698", sev: 3,
+        title: "AppGW KeyVault: Identical Config, Inconsistent Trusted Service Access",
+        category: "KeyVault / Connectivity",
+        causeCategory: "Documentation Gap",
+        detailedCause: "Two AppGW instances with identical configurations showed different KV access behavior: one could access KV certs with public access disabled (trusted services only), the other could not. Investigation revealed inconsistency in how AppGW instances are marked as trusted services by Key Vault. Public documentation also inaccurately described expected behavior.",
+        resolution: "Update documentation to reflect trusted service behavior. Investigate and fix inconsistent trusted service marking at platform level.",
+        uatOwner: "russsantos",
+        tags: ["KeyVault", "Trusted Service", "Documentation", "Platform Bug"],
+        deflectable: false,
+      },
+      {
+        id: "617113283", sev: 3,
+        title: "Connection Draining Behavior Differs from Documentation",
+        category: "Configuration / Behavior",
+        causeCategory: "Documentation Gap",
+        detailedCause: "Customer expected the 60-second connection draining timeout to terminate in-flight connections when a backend became unhealthy. Actual behavior: when health probes mark a backend unhealthy, connection draining does NOT run \u2014 new requests are blocked and existing connections continue until natural completion or timeout. This contradicts documented behavior.",
+        resolution: "Update public documentation to clearly distinguish draining behavior for graceful removal vs. health probe failures",
+        uatOwner: "shrajkumar",
+        tags: ["Connection Draining", "Health Probe", "Documentation", "Expected Behavior"],
+        deflectable: true,
+      },
+      {
+        id: "613668902", sev: 3,
+        title: "502 Errors: HTTP/2 Default Request Limit (1000) Exceeded",
+        category: "HTTP/2 Limits",
+        causeCategory: "Default Limits Too Low",
+        detailedCause: "Customer's application exceeded AppGW's default HTTP/2 max_requests limit (1000 per connection), causing quota enforcement to trigger 502 errors. Resolved by increasing http2_max_requests to 1500 and adjusting http2MaxStreamRate to 600. No self-service path exists; requires manual per-incident override.",
+        resolution: "Increase http2_max_requests to 1500; adjust http2MaxStreamRate to 600. Build self-service limit increase path.",
+        uatOwner: "nbhajantri",
+        tags: ["HTTP/2", "502", "Limits", "Quota"],
+        deflectable: false,
+      },
+      {
+        id: "656701536", sev: 3,
+        title: "Backend Health REST API Returns 'Null' \u2013 202 Polling Behavior Undocumented",
+        category: "API / CRUD",
+        causeCategory: "Documentation Gap",
+        detailedCause: "Customer querying backend health via REST API (Postman) received null responses. Root cause: the API returns HTTP 202 Accepted with a polling URL in the Location header when results are not immediately available. PowerShell and Azure Portal automatically poll this URL; Postman does not. The 202 polling mechanism is completely undocumented.",
+        resolution: "Update REST API documentation to explain 202 Accepted response and required polling pattern with code examples",
+        uatOwner: "kumargaurav",
+        tags: ["REST API", "202 Polling", "Documentation", "Postman"],
+        deflectable: true,
+      },
+      {
+        id: "682965977", sev: 3,
+        title: "AppGW CRUD: EastUS2 VM SKU Capacity Exhausted (Standard_D2d_v5)",
+        category: "Capacity / Region",
+        causeCategory: "Platform / Engineering Bug",
+        detailedCause: "AppGW allocation failed in EastUS2 because the Standard_D2d_v5 VM SKU was at capacity in that region. Customer could not create new gateway instances until the SKU was changed. Mitigated by migrating to Dv2 SKU. Indicates insufficient capacity forecasting for high-demand SKUs in popular regions.",
+        resolution: "Migrate AppGW to Dv2 SKU. Improve capacity forecasting for Standard_D2d_v5 in EastUS2.",
+        uatOwner: "raunakthakur",
+        tags: ["Capacity", "EastUS2", "SKU", "Region"],
+        deflectable: false,
+      },
+      {
+        id: "682780402", sev: 3,
+        title: "AppGW Gen2 Family Migration \u2013 SKU Upgrade Required",
+        category: "Migration",
+        causeCategory: "Customer Misconfiguration",
+        detailedCause: "Customer needed to migrate AppGW instances to the Gen2 family (Standard_D2d_v5 SKU) for improved performance and stability. Incident arose because the migration path and SKU compatibility requirements were not clearly communicated, leading to failed deployments during the upgrade window.",
+        resolution: "Upgrade both AppGW instances to Standard_D2d_v5 SKU. Publish Gen2 migration guidance with SKU compatibility matrix.",
+        uatOwner: "bigat",
+        tags: ["Migration", "Gen2", "SKU"],
+        deflectable: true,
+      },
+      {
+        id: "677452460", sev: 3,
+        title: "AGIC PUT Operations Interrupt Long-Running TCP Sessions",
+        category: "AGIC / Connectivity",
+        causeCategory: "Documentation Gap",
+        detailedCause: "Every PUT operation managed by AGIC triggers a full nginx service restart within the VMSS, breaking all long-running TCP connections. The behavior is inherent to AGIC's design but is completely undocumented. Customers with streaming, WebSocket, or gRPC workloads are disproportionately affected. Correlation between network captures and nginx restart timestamps confirmed the cause.",
+        resolution: "Set connection draining to 300s as interim mitigation. Long-term: implement graceful nginx reload. Advise migration to Application Gateway for Containers (AGC).",
+        uatOwner: "shrajkumar",
+        tags: ["AGIC", "TCP", "PUT", "nginx restart"],
+        deflectable: true,
+      },
+      {
+        id: "647570612", sev: 3,
+        title: "Disabling Response Buffer Causes Throughput and RPS Degradation",
+        category: "Performance / Configuration",
+        causeCategory: "Customer Misconfiguration",
+        detailedCause: "Customer disabled the response buffer on their WAF_v2 AppGW to meet application streaming requirements. This resulted in higher TCP retransmissions, increased TLS errors, degraded connection reuse, and lower overall RPS. Lab and production testing confirmed buffer disablement as the cause.",
+        resolution: "Re-enable response buffer. Document performance implications of disabling response buffering in WAF v2 with guidance for streaming use cases.",
+        uatOwner: "pmanukonda",
+        tags: ["Response Buffer", "Throughput", "TLS", "WAF"],
+        deflectable: true,
+      },
+      {
+        id: "682890855", sev: 3,
+        title: "AppGW Adding 3+ Seconds Latency on Requests with 1MB+ Bodies",
+        category: "Performance / WAF",
+        causeCategory: "Customer Misconfiguration",
+        detailedCause: "Customer observed AppGW adding over 3 seconds of latency to requests with bodies near 1MB. Two contributors: (1) client-side network packet loss causing retransmissions, and (2) WAF body inspection latency that increased significantly after enabling request body inspection for large concurrent payloads. HTTP/2 concurrent request behavior amplified processing time.",
+        resolution: "Tune WAF body inspection size limit. Diagnose client-side packet loss. Document WAF body inspection latency impact for large payloads.",
+        uatOwner: "parimalme",
+        tags: ["Latency", "WAF", "1MB", "HTTP/2", "Body Inspection"],
+        deflectable: false,
+      },
+      {
+        id: "633749196", sev: 3,
+        title: "Routing Rules Not Respected After Configuration Changes (Known Bug)",
+        category: "Performance / Routing",
+        causeCategory: "Platform / Engineering Bug",
+        detailedCause: "A known platform issue causes AppGW to silently alter the order of routing rules whenever configuration changes are applied, breaking customer-defined priority ordering. Priority values are passed correctly on PUT operations but rules are not reordered as expected post-update. This is a tracked work item with no fix currently shipped.",
+        resolution: "Track WI fix. Document workaround: always re-specify full rule ordering on every PUT. Add portal warning. Ship fix to all regions.",
+        uatOwner: "abmittal",
+        tags: ["Routing", "Rules", "Known Issue", "Priority"],
+        deflectable: false,
+      },
+      {
+        id: "665701315", sev: 3,
+        title: "Capacity Units Spiking \u2013 Caused by Mandatory Qualys Security Scans",
+        category: "Performance / Monitoring",
+        causeCategory: "Self-Resolved / Expected Behavior",
+        detailedCause: "Customer alarmed by periodic CPU/capacity unit spikes on their AppGW instances. Investigation confirmed the spikes were caused by mandatory Qualys security scans running on the underlying Mariner Linux platform \u2014 a standard compliance requirement. Scans are capped at 5% CPU at lowest system priority. Spikes did not correlate with traffic increases and posed no performance risk.",
+        resolution: "No action required. Add Qualys scan behavior to AppGW known behavior FAQ to prevent repeat tickets.",
+        uatOwner: "maiagra",
+        tags: ["CPU", "Qualys", "Security Scan", "Capacity Units"],
+        deflectable: true,
+      },
+      {
+        id: "625112793", sev: 3,
+        title: "Backend Server Values Stale \u2013 Dynamic VMSS IP Churn Not Reflected in Metrics",
+        category: "Performance / Metrics",
+        causeCategory: "Customer Misconfiguration",
+        detailedCause: "Customer using a dynamic VMSS backend (frequent IP add/remove) noticed metric filter dropdowns showed historical IPs rather than current ones. The backend address pool filter for metrics is populated from historical data, not real-time VMSS state, making it difficult to isolate per-backend performance during scaling events.",
+        resolution: "Update metrics to use real-time VMSS IP state. Document VMSS dynamic IP behavior and its effect on metric filtering.",
+        uatOwner: "sabhale",
+        tags: ["VMSS", "Metrics", "Backend", "IP"],
+        deflectable: true,
+      },
+      {
+        id: "651250400", sev: 3,
+        title: "Metrics Missing for 1.5 Days After VMSS Version Upgrade [JPANP]",
+        category: "Performance / Metrics",
+        causeCategory: "Self-Resolved / Expected Behavior",
+        detailedCause: "After a VMSS version upgrade on AppGW instances in Japan North, traffic-related metrics were missing for approximately 1.5 days. Root cause: new instances did not emit metrics because the Nginx VTS module requires at least some traffic to initialize its metric configuration. Once traffic resumed post-upgrade, metrics populated normally without any intervention.",
+        resolution: "No platform fix required. Document: metrics will be absent on new instances until first traffic is processed post-upgrade.",
+        uatOwner: "rajatgup",
+        tags: ["Metrics", "VMSS", "Upgrade", "Nginx VTS"],
+        deflectable: true,
+      },
+      {
+        id: "687282975", sev: 3,
+        title: "HTTP/2 Max Requests Need Increase to 2000 \u2013 Stream Errors and Latency Spikes",
+        category: "HTTP/2 Limits",
+        causeCategory: "Default Limits Too Low",
+        detailedCause: "Customer experienced HTTP/2 stream errors, latency spikes, and request refusals due to exceeding AppGW's HTTP/2 max concurrent streams and max requests limits. WAF processing latency from changes in request body content compounded the issue. Resolved by increasing HTTP/2 max requests to 2000.",
+        resolution: "Increase HTTP/2 max requests to 2000. Tune WAF body inspection. Evaluate adaptive default based on SKU tier.",
+        uatOwner: "ujalisharm",
+        tags: ["HTTP/2", "Limits", "WAF", "Streams"],
+        deflectable: false,
+      },
+      {
+        id: "632968672", sev: 3,
+        title: "HTTP/2 1000 Req/Connection Limit Too Low for Burst Workloads",
+        category: "HTTP/2 Limits",
+        causeCategory: "Default Limits Too Low",
+        detailedCause: "An internal Microsoft golang module proxy frequently exceeded the 1000 HTTP request per HTTP/2 connection limit on AppGW. Bursts of thousands of simultaneous requests caused HTTP 499 responses. HTTP/2 multiplexing over a single connection is not well-suited for this burst pattern.",
+        resolution: "Raise HTTP/2 limit. Publish best practices for burst workloads on AppGW. Recommend HTTP/1.1 keep-alive for high-burst clients.",
+        uatOwner: "parimalme",
+        tags: ["HTTP/2", "Burst", "Limits", "499"],
+        deflectable: false,
+      },
+      {
+        id: "633415049", sev: 3,
+        title: "Billing Discrepancy: AppGW Bandwidth Billed 30x Higher Than Expected",
+        category: "Billing",
+        causeCategory: "Documentation Gap",
+        detailedCause: "Customer was billed for ~41TB of bandwidth but only observed ~2TB in AppGW throughput metrics. Billing is accurate: AppGW billing counts all TCP/IP/SSL handshake overhead in addition to payload bytes. With short-lived connections (avg payload 194 bytes) and IPv6 headers, TCP/IP/SSL overhead can be 30x the payload size.",
+        resolution: "Billing confirmed accurate. Add billing explainer to documentation. Expose overhead breakdown in AppGW metrics so customers can self-diagnose.",
+        uatOwner: "rtapadar",
+        tags: ["Billing", "Bandwidth", "TCP Overhead", "IPv6"],
+        deflectable: true,
+      },
+      {
+        id: "674466038", sev: 3,
+        title: "Customer Requesting Extension of TLS 1.0/1.1 Retirement Deadline",
+        category: "Security / TLS",
+        causeCategory: "Self-Resolved / Expected Behavior",
+        detailedCause: "Customer requested another extension of the TLS 1.0/1.1 retirement deadline. A 1-year extension beyond the original August 2024 date had already been granted. No further extension was possible. This ICM consumed support engineering time but required no technical fix.",
+        resolution: "No extension granted. Publish a TLS upgrade guide with step-by-step migration paths for legacy systems.",
+        uatOwner: "rtapadar",
+        tags: ["TLS 1.0", "TLS 1.1", "Retirement", "Legacy"],
+        deflectable: true,
+      },
+      {
+        id: "648265341", sev: 4,
+        title: "[SFI] TLS Certificate Shared Across Two Azure Tenants/Environments",
+        category: "Security / Certificates",
+        causeCategory: "Documentation Gap",
+        detailedCause: "Customer was copying TLS certificates between different Azure tenants and cloud environments for use in AppGW listeners. This practice does not align with Microsoft security guidelines (SFI). The issue auto-resolved after confirming the customer's approach was by design, but they were advised to upload KV certificates directly per tenant.",
+        resolution: "Advise customer to upload KV certs directly per tenant. Update security documentation to address cross-tenant cert copying.",
+        uatOwner: "dikato",
+        tags: ["Certificate", "Cross-tenant", "Security", "SFI"],
+        deflectable: true,
+      },
+      {
+        id: "635781788", sev: 3,
+        title: "AppGW Connectivity: MSSQL Pre-Login Failure \u2013 TDS 8.0 TLS Proxy Unsupported",
+        category: "Connectivity / Protocol",
+        causeCategory: "Documentation Gap",
+        detailedCause: "Customer attempted to use AppGW as a TLS-terminating proxy for MSSQL connections using TDS 8.0. Both Layer 7 and Layer 4 configurations were tested extensively but could not support the scenario. TDS 8.0 protocol is not supported for TLS termination on AppGW \u2014 confirmed only after prolonged investigation due to missing protocol support documentation.",
+        resolution: "Use TCP listener (not TLS listener) for MSSQL. Publish protocol support matrix listing TDS 8.0 as unsupported. Add portal warning for MSSQL/TDS patterns.",
+        uatOwner: "rajatgup",
+        tags: ["MSSQL", "TDS 8.0", "TLS Proxy", "TCP Listener"],
+        deflectable: true,
+      },
+      {
+        id: "646799486", sev: 3,
+        title: "AppGW CRUD: Portal Errors \u2013 Missing Managed Identity Permissions (LinkedAuthorizationFailed)",
+        category: "CRUD / Permissions",
+        causeCategory: "Documentation Gap",
+        detailedCause: "Customer received 'LinkedAuthorizationFailed' errors when updating AppGW via the portal. Root cause: ARM enforces permission checks to prevent unauthorized managed identity assignments and the customer lacked required permissions on the MI resource. This enforcement is at ARM level, not within AppGW or NRP, and is completely undocumented. Customer self-mitigated by acquiring MI permissions.",
+        resolution: "Create troubleshooting guide for LinkedAuthorizationFailed errors. Add portal pre-flight MI permission validation with actionable error messages.",
+        uatOwner: "srijanis",
+        tags: ["Managed Identity", "ARM", "Permissions", "Portal"],
+        deflectable: true,
+      },
+      {
+        id: "618867118", sev: 3,
+        title: "AppGW CRUD: Cross-Subscription Key Vault Cert Retrieval Fails Silently in Portal",
+        category: "KeyVault / Portal",
+        causeCategory: "Feature Gap / Design Limitation",
+        detailedCause: "Customer needed to configure an AppGW listener with a certificate from a Key Vault in a different Azure subscription. The Azure Portal does not support cross-subscription Key Vault certificate retrieval for AppGW listeners, regardless of RBAC or Access Policy configurations. PowerShell works but the portal limitation is not surfaced to the user \u2014 it silently fails.",
+        resolution: "Add in-portal warning when cross-subscription KV is detected. Provide PowerShell/CLI fallback link in error message. Document portal limitation explicitly.",
+        uatOwner: "nhariharan",
+        tags: ["KeyVault", "Cross-Subscription", "Portal Limitation", "Certificate"],
+        deflectable: true,
+      },
+    ];
+
+    const CAUSE_COLORS = {
+      "Documentation Gap": "#f97316",
+      "Default Limits Too Low": "#ef4444",
+      "Customer Misconfiguration": "#eab308",
+      "Self-Resolved / Expected Behavior": "#06b6d4",
+      "Platform / Engineering Bug": "#ec4899",
+      "Feature Gap / Design Limitation": "#8b5cf6",
+    };
+
+    const causeCounts = ICM_DATA.reduce((acc, icm) => {
+      acc[icm.causeCategory] = (acc[icm.causeCategory] || 0) + 1;
+      return acc;
+    }, {});
+
+    const CAUSE_DATA = Object.entries(causeCounts)
+      .map(([name, count]) => ({ name, count, color: CAUSE_COLORS[name] || "#64748b" }))
+      .sort((a, b) => b.count - a.count);
+
+    const totalICMs = ICM_DATA.length;
+    const deflectable = ICM_DATA.filter(d => d.deflectable).length;
+    const docGaps = causeCounts["Documentation Gap"] || 0;
+    const http2Issues = causeCounts["Default Limits Too Low"] || 0;
+    const platformBugs = causeCounts["Platform / Engineering Bug"] || 0;
+    const misconfig = causeCounts["Customer Misconfiguration"] || 0;
+
+    const ACTION_DATA = [
+      { owner: "Documentation", count: 13, fill: "#f97316" },
+      { owner: "PM Investigation", count: 9, fill: "#3b82f6" },
+      { owner: "Engineering Fix", count: 8, fill: "#8b5cf6" },
+      { owner: "Limit Increase", count: 5, fill: "#ef4444" },
+      { owner: "Customer Action", count: 4, fill: "#10b981" },
+    ];
+
+    const SEV_COLOR = { 2: "#ef4444", 3: "#f97316", 4: "#3b82f6" };
+
+    const PM_ACTIONS = [
+      {
+        priority: "P0", color: "#ef4444",
+        area: "HTTP/2 Default Limits \u2014 4 ICMs, All In-Production Failures",
+        insight: "The AppGW default HTTP/2 limit of 1000 requests/connection is too low for high-throughput workloads. Four separate customers hit this in production (including a payment processor), each requiring a manual per-incident limit override with no self-service path. The limit compounds with WAF body inspection latency.",
+        action: "Raise the default HTTP/2 max requests to 2000 for WAF_v2 and Standard_v2 tiers. Build a self-service limit increase flow in the portal. Add a proactive alert when customers reach 80% of the limit. Publish HTTP/2 best practices for burst and payment workloads.",
+        icms: ["658172993", "613668902", "687282975", "632968672"],
+      },
+      {
+        priority: "P0", color: "#f97316",
+        area: "Documentation Sprint \u2014 9 ICMs Directly Preventable",
+        insight: "9 ICMs were caused or prolonged by missing or inaccurate documentation: billing TCP overhead, connection draining on unhealthy backends, REST API 202 polling, TDS 8.0 unsupported protocol, MI LinkedAuthorizationFailed errors, cross-tenant cert security, AGIC TCP session behavior, KeyVault trusted service inconsistency, and cross-subscription KV portal limitation.",
+        action: "Commission a targeted documentation sprint. Priority pages: (1) AppGW Billing & Bandwidth FAQ, (2) Connection Draining edge cases, (3) REST API async polling guide, (4) Protocol support matrix including TDS 8.0, (5) Managed Identity permissions pre-checklist, (6) KeyVault integration guide covering all network isolation patterns.",
+        icms: ["633415049", "617113283", "656701536", "635781788", "646799486", "648265341", "677452460", "653075698", "618867118"],
+      },
+      {
+        priority: "P1", color: "#8b5cf6",
+        area: "KeyVault Integration Reliability \u2014 4 ICMs",
+        insight: "Four ICMs trace to AppGW and KeyVault friction: (1) network-isolated gateway blocking KV access with no pre-flight warning, (2) trusted service marking inconsistency between identical configs, (3) cross-subscription KV silently failing in portal, (4) MI permissions enforced at ARM level with no user-facing explanation.",
+        action: "Publish a single 'AppGW + Key Vault Integration Guide' covering all known failure modes. Add portal pre-flight checks that warn when no private/service endpoint exists with network isolation, and when cross-subscription KV is selected. Build a KV connectivity diagnostics tool in the portal.",
+        icms: ["669529794", "653075698", "618867118", "646799486"],
+      },
+      {
+        priority: "P1", color: "#10b981",
+        area: "Portal Feature Gaps and Silent Failures \u2014 3 ICMs",
+        insight: "Three ICMs caused by portal limitations customers discovered only after filing tickets: cross-subscription KV unsupported with no warning, TDS 8.0 TLS proxy unsupported with no protocol matrix, and MI permissions required but not checked pre-flight.",
+        action: "Audit portal flows for silent failures and add inline error messaging with actionable alternatives. Publish a supported/unsupported scenario matrix for AppGW. Track portal parity items for cross-subscription KV cert configuration.",
+        icms: ["618867118", "635781788", "646799486"],
+      },
+      {
+        priority: "P1", color: "#06b6d4",
+        area: "Self-Resolved / Expected Behavior \u2014 Deflect via FAQ (3 ICMs)",
+        insight: "Three ICMs resolved without any platform fix \u2014 the behavior was expected but not communicated to customers: Qualys scan CPU spikes, VMSS upgrade metric gaps, and TLS 1.0/1.1 retirement extension request. Each consumed support engineer time unnecessarily.",
+        action: "Create an AppGW Known Behavior FAQ page. Add in-portal notification for Qualys scan windows. Add a tooltip explaining metric initialization after upgrades. Ensure TLS retirement communications include self-service upgrade guides.",
+        icms: ["665701315", "651250400", "674466038"],
+      },
+      {
+        priority: "P2", color: "#64748b",
+        area: "Billing Transparency \u2014 Recurring Pattern",
+        insight: "Customer billed 30x more than AppGW throughput metrics showed (41TB vs 2TB). TCP/IP/SSL overhead on short-lived small-payload connections (avg 194 bytes) accounts for the gap. IPv6 amplifies the overhead further. This pattern has occurred for multiple customers.",
+        action: "Add an AppGW billing explainer to Azure Cost Management. Expose a protocol overhead metric in AppGW diagnostics. Add an in-portal cost estimator that accounts for connection overhead based on workload profile.",
+        icms: ["633415049"],
+      },
+    ];
+
+    const ENG_ACTIONS = [
+      {
+        priority: "P0", color: "#ef4444",
+        area: "HTTP/2 Self-Service Limit Infrastructure",
+        insight: "Every HTTP/2 limit increase requires a manual support escalation with no self-service path. Four customers were blocked in production awaiting the override. The limit is a hard-coded default with no adaptive logic based on SKU or observed workload.",
+        action: "Build a self-service HTTP/2 limit increase flow in the portal and ARM/CLI. Implement adaptive defaults based on WAF_v2 vs Standard_v2 SKU. Add proactive monitoring that fires when 80% of limit is reached and suggests an increase.",
+      },
+      {
+        priority: "P0", color: "#ec4899",
+        area: "AGIC PUT Operations \u2014 Graceful nginx Reload",
+        insight: "Every AGIC PUT operation triggers a full nginx service restart, dropping all long-running TCP connections. Customers with streaming, WebSocket, or gRPC workloads are severely impacted. The behavior is by design but the engineering trade-off between hard restart and graceful reload should be revisited.",
+        action: "Implement graceful nginx config reload for AGIC-driven PUT operations to avoid connection disruption. Until fixed: automatically enforce connection draining on PUT ops. Document the current behavior and migration path to Application Gateway for Containers (AGC).",
+      },
+      {
+        priority: "P1", color: "#f97316",
+        area: "502 Errors During Auto-Scale Events \u2014 Race Condition",
+        insight: "502 errors observed independently on two separate AppGW instances during auto-scale events. A single new instance receives traffic before it is fully warmed, causing failures despite backends being healthy. Nginx restart on the scaling instance is the proximate cause.",
+        action: "Implement a pre-warm health check gate: new scale instances must pass at least one successful health probe before being added to traffic rotation. Investigate nginx restart timing during scale-out events.",
+      },
+      {
+        priority: "P1", color: "#eab308",
+        area: "Routing Rule Priority Persistence Bug",
+        insight: "A known platform issue causes AppGW to silently reorder routing rules after any configuration change, breaking customer-defined priority ordering. This is a tracked work item with no current ETA for a fix.",
+        action: "Prioritize and ship the routing rule priority fix. Add an integration test that validates rule order is preserved across PUT operations. Add a portal warning noting that rule order may change until the fix ships.",
+      },
+      {
+        priority: "P1", color: "#8b5cf6",
+        area: "KeyVault Trusted Service Marking Inconsistency",
+        insight: "Identical AppGW configurations produce different KeyVault access results \u2014 one instance is marked as a trusted service, another is not. Root cause has not been identified at the platform level, making this a blocking issue for network-isolated deployments.",
+        action: "Instrument AppGW to KeyVault access paths with telemetry to track trusted service marking per instance. Identify the condition under which marking fails. Ship a deterministic fix or a reliable workaround with clear documentation.",
+      },
+      {
+        priority: "P1", color: "#06b6d4",
+        area: "Regional Capacity Forecasting and Stage Onboarding",
+        insight: "EastUS2 hit Standard_D2d_v5 SKU capacity exhaustion, blocking AppGW allocations. Separately, US South Central was not properly onboarded as a stage region, causing all stage deployments to fail silently.",
+        action: "Improve capacity forecasting for popular SKUs in top regions (EastUS2, WestUS2, WestEurope). Automate stage region onboarding validation with a health check pipeline before marking regions live for deployment.",
+      },
+      {
+        priority: "P2", color: "#64748b",
+        area: "PUT Operation Latency Observability (50+ min incident)",
+        insight: "A PUT operation took 50+ minutes with no customer-facing status or internal telemetry to diagnose the delay. No root cause was identified during investigation due to lack of granular tracing at each processing stage.",
+        action: "Add stage-level timestamps to PUT operation tracing in ARM and NRP. Set an SLO alert for PUT ops exceeding 5 minutes. Build a diagnostic runbook for long-running PUT operations.",
+      },
+    ];
+
+    function ICMDashboard() {
+      const [activeTab, setActiveTab] = useState("overview");
+      const [selectedCause, setSelectedCause] = useState(null);
+      const [expandedICM, setExpandedICM] = useState(null);
+
+      const filteredICMs = selectedCause ? ICM_DATA.filter(d => d.causeCategory === selectedCause) : ICM_DATA;
+
+      const TABS = [
+        { id: "overview", label: "\uD83D\uDCCA Overview & Trends" },
+        { id: "icms", label: "\uD83D\uDD0D ICM Explorer" },
+        { id: "pm", label: "\uD83D\uDCCB PM Actions" },
+        { id: "eng", label: "\u2699\uFE0F Eng Actions" },
+      ];
+
+      const s = (base) => ({ ...base });
+
+      return (
+        <div style={{ fontFamily: "'Segoe UI', system-ui, sans-serif", background: "#0f172a", minHeight: "100vh", color: "#e2e8f0" }}>
+          {/* HEADER */}
+          <div style={{ background: "linear-gradient(135deg,#1e293b 0%,#0f172a 100%)", borderBottom: "1px solid #334155", padding: "24px 32px" }}>
+            <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+                <div style={{ background: "#3b82f6", borderRadius: 8, padding: "6px 10px", fontSize: 20 }}>🌐</div>
+                <div>
+                  <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#f1f5f9" }}>Azure Application Gateway — ICM CRI Analysis</h1>
+                  <p style={{ margin: 0, fontSize: 13, color: "#94a3b8" }}>{totalICMs} ICMs · Root Cause Trend Analysis · PM and Eng Recommendations</p>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 12, marginTop: 20, flexWrap: "wrap" }}>
+                {[
+                  { label: "Total ICMs", value: totalICMs, color: "#3b82f6" },
+                  { label: "Deflectable via Docs/Portal", value: `${deflectable} (${Math.round(deflectable / totalICMs * 100)}%)`, color: "#94a3b8" },
+                  { label: "Documentation Gaps", value: docGaps, color: "#f97316" },
+                  { label: "HTTP/2 Limit Issues", value: http2Issues, color: "#ef4444" },
+                  { label: "Customer Misconfig", value: misconfig, color: "#eab308" },
+                  { label: "Platform Bugs", value: platformBugs, color: "#ec4899" },
+                ].map(stat => (
+                  <div key={stat.label} style={{ background: "#1e293b", border: `1px solid ${stat.color}44`, borderRadius: 10, padding: "12px 18px", minWidth: 120 }}>
+                    <div style={{ fontSize: 26, fontWeight: 800, color: stat.color }}>{stat.value}</div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{stat.label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* TABS */}
+          <div style={{ background: "#1e293b", borderBottom: "1px solid #334155" }}>
+            <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex" }}>
+              {TABS.map(t => (
+                <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
+                  background: activeTab === t.id ? "#0f172a" : "transparent",
+                  border: "none", borderBottom: activeTab === t.id ? "2px solid #3b82f6" : "2px solid transparent",
+                  color: activeTab === t.id ? "#f1f5f9" : "#94a3b8",
+                  padding: "14px 24px", cursor: "pointer", fontWeight: activeTab === t.id ? 600 : 400, fontSize: 14,
+                }}>{t.label}</button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ maxWidth: 1200, margin: "0 auto", padding: "28px 32px" }}>
+
+            {/* ── OVERVIEW ── */}
+            {activeTab === "overview" && (
+              <div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
+                  <div style={{ background: "#1e293b", borderRadius: 12, padding: 24, border: "1px solid #334155" }}>
+                    <h3 style={{ margin: "0 0 2px", fontSize: 15, fontWeight: 600, color: "#f1f5f9" }}>🔎 Root Cause Categories</h3>
+                    <p style={{ margin: "0 0 16px", fontSize: 11, color: "#64748b" }}>Auto-calculated from ICM data · Click a bar to filter ICM Explorer</p>
+                    <ResponsiveContainer width="100%" height={290}>
+                      <BarChart data={CAUSE_DATA} layout="vertical"
+                        onClick={d => d && d.activePayload && setSelectedCause(selectedCause === d.activePayload[0].payload.name ? null : d.activePayload[0].payload.name)}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" horizontal={false} />
+                        <XAxis type="number" tick={{ fill: "#94a3b8", fontSize: 11 }} allowDecimals={false} domain={[0, 12]} />
+                        <YAxis type="category" dataKey="name" tick={{ fill: "#cbd5e1", fontSize: 10 }} width={195} />
+                        <Tooltip contentStyle={{ background: "#1e293b", border: "1px solid #475569", borderRadius: 8, color: "#e2e8f0", fontSize: 12 }}
+                          formatter={(value, _n, props) => [`${value} ICMs`, props.payload.name]} />
+                        <Bar dataKey="count" radius={[0, 4, 4, 0]} label={{ position: "right", fill: "#94a3b8", fontSize: 12, fontWeight: 700 }}>
+                          {CAUSE_DATA.map(e => <Cell key={e.name} fill={e.color} opacity={selectedCause && selectedCause !== e.name ? 0.2 : 1} />)}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div style={{ background: "#1e293b", borderRadius: 12, padding: 24, border: "1px solid #334155" }}>
+                    <h3 style={{ margin: "0 0 2px", fontSize: 15, fontWeight: 600, color: "#f1f5f9" }}>🎯 Deflectable vs. Needs Engineering</h3>
+                    <p style={{ margin: "0 0 14px", fontSize: 11, color: "#64748b" }}>Deflectable = solvable via docs, portal warnings, or FAQ</p>
+                    <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+                      <ResponsiveContainer width={170} height={170}>
+                        <PieChart>
+                          <Pie data={[{ name: "Needs Engineering", value: totalICMs - deflectable }, { name: "Deflectable", value: deflectable }]}
+                            cx="50%" cy="50%" innerRadius={44} outerRadius={80} paddingAngle={3} dataKey="value">
+                            <Cell fill="#3b82f6" />
+                            <Cell fill="#94a3b8" />
+                          </Pie>
+                          <Tooltip contentStyle={{ background: "#1e293b", border: "1px solid #475569", borderRadius: 8, color: "#e2e8f0", fontSize: 12 }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+                        {[
+                          { c: "#3b82f6", l: `${totalICMs - deflectable} Need Engineering`, s: "Platform bugs, limit increases, infra investigations" },
+                          { c: "#94a3b8", l: `${deflectable} Deflectable (${Math.round(deflectable / totalICMs * 100)}%)`, s: "Better docs, portal warnings, self-service tools, FAQ" },
+                        ].map(i => (
+                          <div key={i.l} style={{ background: "#0f172a", borderRadius: 8, padding: "10px 12px", borderLeft: `3px solid ${i.c}` }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "#f1f5f9" }}>{i.l}</div>
+                            <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{i.s}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 16 }}>
+                      <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>💡 Key Patterns</div>
+                      {[
+                        { icon: "📄", c: "#f97316", t: `Docs are #1 deflection lever (${docGaps} ICMs)`, d: "Missing or inaccurate docs caused the most ICMs — highest ROI fix" },
+                        { icon: "🚀", c: "#ef4444", t: `HTTP/2 default limit hit ${http2Issues}x by different customers`, d: "Same 1000 req/conn default repeatedly blocks high-throughput workloads" },
+                        { icon: "🔑", c: "#8b5cf6", t: "KeyVault is a multi-ICM friction hotspot", d: "Network isolation, trusted service, cross-subscription, MI permissions" },
+                        { icon: "🔌", c: "#10b981", t: "Portal silently fails on 3+ scenarios", d: "No warnings for cross-sub KV, TDS 8.0 unsupported, or MI permission gaps" },
+                      ].map(item => (
+                        <div key={item.t} style={{ display: "flex", gap: 10, marginBottom: 7, padding: "8px 10px", background: "#0f172a", borderRadius: 6, borderLeft: `3px solid ${item.c}` }}>
+                          <span style={{ fontSize: 14 }}>{item.icon}</span>
+                          <div>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: "#f1f5f9" }}>{item.t}</div>
+                            <div style={{ fontSize: 11, color: "#94a3b8" }}>{item.d}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ background: "#1e293b", borderRadius: 12, padding: 24, border: "1px solid #334155" }}>
+                  <h3 style={{ margin: "0 0 4px", fontSize: 15, fontWeight: 600, color: "#f1f5f9" }}>👥 Resolution Ownership Breakdown</h3>
+                  <p style={{ margin: "0 0 16px", fontSize: 11, color: "#64748b" }}>Primary action owner per ICM (some ICMs span multiple owners)</p>
+                  <ResponsiveContainer width="100%" height={150}>
+                    <BarChart data={ACTION_DATA}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                      <XAxis dataKey="owner" tick={{ fill: "#94a3b8", fontSize: 12 }} />
+                      <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} domain={[0, 16]} />
+                      <Tooltip contentStyle={{ background: "#1e293b", border: "1px solid #475569", borderRadius: 8, color: "#e2e8f0", fontSize: 12 }} />
+                      <Bar dataKey="count" radius={[4, 4, 0, 0]} label={{ position: "top", fill: "#94a3b8", fontSize: 12, fontWeight: 700 }}>
+                        {ACTION_DATA.map(e => <Cell key={e.owner} fill={e.fill} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
+
+            {/* ── ICM EXPLORER ── */}
+            {activeTab === "icms" && (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: "#f1f5f9" }}>
+                      ICM Table — {filteredICMs.length} of {totalICMs} shown
+                      {selectedCause && <span style={{ fontSize: 13, color: "#94a3b8", fontWeight: 400 }}> · {selectedCause}</span>}
+                    </h2>
+                    <p style={{ margin: "4px 0 0", fontSize: 12, color: "#64748b" }}>Click any row to expand full root cause detail, DRI, and resolution</p>
+                  </div>
+                  {selectedCause && (
+                    <button onClick={() => setSelectedCause(null)} style={{ background: "#334155", border: "none", color: "#e2e8f0", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
+                      Clear Filter ✕
+                    </button>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                  {CAUSE_DATA.map(c => (
+                    <button key={c.name} onClick={() => setSelectedCause(selectedCause === c.name ? null : c.name)}
+                      style={{ background: selectedCause === c.name ? c.color : "#1e293b", border: `1px solid ${c.color}`, borderRadius: 20, padding: "4px 12px", fontSize: 11, color: selectedCause === c.name ? "#0f172a" : c.color, cursor: "pointer", fontWeight: 600 }}>
+                      {c.name} ({c.count})
+                    </button>
+                  ))}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {filteredICMs.map(icm => (
+                    <div key={icm.id} style={{ background: "#1e293b", borderRadius: 10, border: "1px solid #334155", overflow: "hidden", cursor: "pointer" }}
+                      onClick={() => setExpandedICM(expandedICM === icm.id ? null : icm.id)}>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "13px 18px" }}>
+                        <div style={{ background: `${SEV_COLOR[icm.sev]}22`, border: `1px solid ${SEV_COLOR[icm.sev]}`, borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, color: SEV_COLOR[icm.sev], whiteSpace: "nowrap", marginTop: 2 }}>SEV {icm.sev}</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "#f1f5f9" }}>{icm.title}</div>
+                          <div style={{ display: "flex", gap: 8, marginTop: 5, flexWrap: "wrap", alignItems: "center" }}>
+                            <span style={{ fontSize: 11, color: "#64748b" }}>#{icm.id}</span>
+                            <span style={{ fontSize: 11, color: "#94a3b8" }}>DRI: <span style={{ color: "#60a5fa", fontWeight: 600 }}>{icm.uatOwner}</span></span>
+                            <span style={{ background: `${CAUSE_COLORS[icm.causeCategory] || "#64748b"}22`, border: `1px solid ${CAUSE_COLORS[icm.causeCategory] || "#64748b"}`, borderRadius: 20, padding: "2px 10px", fontSize: 10, fontWeight: 600, color: CAUSE_COLORS[icm.causeCategory] || "#64748b" }}>{icm.causeCategory}</span>
+                            {icm.deflectable && <span style={{ background: "#94a3b822", border: "1px solid #94a3b8", borderRadius: 20, padding: "2px 8px", fontSize: 10, color: "#94a3b8" }}>🔀 Deflectable</span>}
+                          </div>
+                        </div>
+                        <span style={{ color: "#475569", fontSize: 14, marginTop: 2 }}>{expandedICM === icm.id ? "▲" : "▼"}</span>
+                      </div>
+                      {expandedICM === icm.id && (
+                        <div style={{ borderTop: "1px solid #334155", padding: "0 18px 18px" }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, marginTop: 14 }}>
+                            <div style={{ background: "#0f172a", borderRadius: 8, padding: 14 }}>
+                              <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>🔍 Detailed Root Cause</div>
+                              <p style={{ margin: 0, fontSize: 12, color: "#cbd5e1", lineHeight: 1.75 }}>{icm.detailedCause}</p>
+                            </div>
+                            <div style={{ background: "#0f172a", borderRadius: 8, padding: 14 }}>
+                              <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>✅ Resolution / Next Action</div>
+                              <p style={{ margin: 0, fontSize: 12, color: "#cbd5e1", lineHeight: 1.75 }}>{icm.resolution}</p>
+                            </div>
+                          </div>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginTop: 10 }}>
+                            <div style={{ background: "#0f172a", borderRadius: 8, padding: 12 }}>
+                              <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 4, textTransform: "uppercase" }}>DRI / UAT Owner</div>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: "#60a5fa" }}>{icm.uatOwner}</div>
+                            </div>
+                            <div style={{ background: "#0f172a", borderRadius: 8, padding: 12 }}>
+                              <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 4, textTransform: "uppercase" }}>Category</div>
+                              <div style={{ fontSize: 12, color: "#e2e8f0" }}>{icm.category}</div>
+                            </div>
+                            <div style={{ background: "#0f172a", borderRadius: 8, padding: 12 }}>
+                              <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 4, textTransform: "uppercase" }}>Deflectable?</div>
+                              <div style={{ fontSize: 12, fontWeight: 600, color: icm.deflectable ? "#94a3b8" : "#3b82f6" }}>{icm.deflectable ? "Yes — docs/portal/FAQ" : "No — needs eng fix"}</div>
+                            </div>
+                            <div style={{ background: "#0f172a", borderRadius: 8, padding: 12 }}>
+                              <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 6, textTransform: "uppercase" }}>Tags</div>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                                {icm.tags.slice(0, 3).map(tag => <span key={tag} style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 4, padding: "2px 6px", fontSize: 9, color: "#94a3b8" }}>{tag}</span>)}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── PM ACTIONS ── */}
+            {activeTab === "pm" && (
+              <div>
+                <div style={{ background: "#1e293b", borderRadius: 10, padding: 20, border: "1px solid #334155", marginBottom: 20 }}>
+                  <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600, color: "#f1f5f9" }}>📋 CRI Recommendations for Product Managers</h3>
+                  <p style={{ margin: 0, fontSize: 13, color: "#94a3b8", lineHeight: 1.65 }}>Focused on product defaults, documentation strategy, portal UX gaps, and feature investments that reduce ICM volume. The single highest-impact action is a targeted documentation sprint — 9 ICMs were directly preventable.</p>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  {PM_ACTIONS.map(a => (
+                    <div key={a.area} style={{ background: "#1e293b", borderRadius: 12, border: `1px solid ${a.color}44`, overflow: "hidden" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 20px", borderBottom: "1px solid #334155" }}>
+                        <div style={{ background: `${a.color}22`, border: `1px solid ${a.color}`, borderRadius: 6, padding: "4px 12px", fontSize: 12, fontWeight: 800, color: a.color }}>{a.priority}</div>
+                        <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f1f5f9", flex: 1 }}>{a.area}</h4>
+                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                          {a.icms.slice(0, 4).map(id => <span key={id} style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 4, padding: "2px 7px", fontSize: 10, color: "#64748b" }}>#{id.slice(-6)}</span>)}
+                          {a.icms.length > 4 && <span style={{ fontSize: 10, color: "#64748b" }}>+{a.icms.length - 4} more</span>}
+                        </div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr" }}>
+                        <div style={{ padding: "16px 20px", borderRight: "1px solid #334155" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>🔍 Insight</div>
+                          <p style={{ margin: 0, fontSize: 13, color: "#cbd5e1", lineHeight: 1.65 }}>{a.insight}</p>
+                        </div>
+                        <div style={{ padding: "16px 20px" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>✅ Recommended Action</div>
+                          <p style={{ margin: 0, fontSize: 13, color: "#cbd5e1", lineHeight: 1.65 }}>{a.action}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── ENG ACTIONS ── */}
+            {activeTab === "eng" && (
+              <div>
+                <div style={{ background: "#1e293b", borderRadius: 10, padding: 20, border: "1px solid #334155", marginBottom: 20 }}>
+                  <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600, color: "#f1f5f9" }}>⚙️ CRI Recommendations for Engineering Managers</h3>
+                  <p style={{ margin: 0, fontSize: 13, color: "#94a3b8", lineHeight: 1.65 }}>Platform fixes, infrastructure investments, and observability gaps that engineering teams should prioritize to reduce ICM recurrence. Top priorities: HTTP/2 self-service limits, AGIC graceful reload, and the routing rule priority bug.</p>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  {ENG_ACTIONS.map(a => (
+                    <div key={a.area} style={{ background: "#1e293b", borderRadius: 12, border: `1px solid ${a.color}44`, overflow: "hidden" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 20px", borderBottom: "1px solid #334155" }}>
+                        <div style={{ background: `${a.color}22`, border: `1px solid ${a.color}`, borderRadius: 6, padding: "4px 12px", fontSize: 12, fontWeight: 800, color: a.color }}>{a.priority}</div>
+                        <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f1f5f9" }}>{a.area}</h4>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr" }}>
+                        <div style={{ padding: "16px 20px", borderRight: "1px solid #334155" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>🔍 Pattern Observed</div>
+                          <p style={{ margin: 0, fontSize: 13, color: "#cbd5e1", lineHeight: 1.65 }}>{a.insight}</p>
+                        </div>
+                        <div style={{ padding: "16px 20px" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>🛠️ Engineering Action</div>
+                          <p style={{ margin: 0, fontSize: 13, color: "#cbd5e1", lineHeight: 1.65 }}>{a.action}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<ICMDashboard />);
+  </script>
+</body>
+</html>
